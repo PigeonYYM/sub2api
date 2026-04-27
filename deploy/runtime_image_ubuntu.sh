@@ -17,6 +17,8 @@ TZ_VALUE="${TZ:-Asia/Shanghai}"
 ENV_FILE="${ENV_FILE:-}"
 NETWORK_NAME="${NETWORK_NAME:-}"
 FORCE_RECREATE="${FORCE_RECREATE:-0}"
+POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-}"
+REDIS_HOST_PORT="${REDIS_HOST_PORT:-}"
 
 ensure_artifacts() {
     if [ ! -x "${REPO_ROOT}/build-out/sub2api" ]; then
@@ -36,9 +38,18 @@ build_image() {
 }
 
 run_container() {
-    : "${DATABASE_HOST:?DATABASE_HOST is required}"
-    : "${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}"
-    : "${REDIS_HOST:?REDIS_HOST is required}"
+    local postgres_host_bind
+    local redis_host_bind
+
+    postgres_host_bind="${POSTGRES_HOST_BIND:-127.0.0.1}"
+    redis_host_bind="${REDIS_HOST_BIND:-127.0.0.1}"
+
+    if [ -n "${POSTGRES_HOST_PORT}" ] && [ -z "${POSTGRES_HOST_BIND:-}" ]; then
+        postgres_host_bind="0.0.0.0"
+    fi
+    if [ -n "${REDIS_HOST_PORT}" ] && [ -z "${REDIS_HOST_BIND:-}" ]; then
+        redis_host_bind="0.0.0.0"
+    fi
 
     if docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
         if [ "${FORCE_RECREATE}" = "1" ]; then
@@ -57,18 +68,21 @@ run_container() {
         --env "SERVER_PORT=8080"
         --env "SERVER_MODE=${SERVER_MODE:-release}"
         --env "RUN_MODE=${RUN_MODE:-standard}"
+        --env "POSTGRES_HOST_BIND=${postgres_host_bind}"
+        --env "REDIS_HOST_BIND=${redis_host_bind}"
+        --env "DATA_DIR=/app/data"
         --env "TZ=${TZ_VALUE}"
-        --env "DATABASE_HOST=${DATABASE_HOST}"
+        --env "DATABASE_HOST=127.0.0.1"
         --env "DATABASE_PORT=${DATABASE_PORT:-5432}"
         --env "DATABASE_USER=${DATABASE_USER:-sub2api}"
-        --env "DATABASE_PASSWORD=${DATABASE_PASSWORD}"
+        --env "DATABASE_PASSWORD=${DATABASE_PASSWORD:-}"
         --env "DATABASE_DBNAME=${DATABASE_DBNAME:-sub2api}"
         --env "DATABASE_SSLMODE=${DATABASE_SSLMODE:-disable}"
         --env "DATABASE_MAX_OPEN_CONNS=${DATABASE_MAX_OPEN_CONNS:-50}"
         --env "DATABASE_MAX_IDLE_CONNS=${DATABASE_MAX_IDLE_CONNS:-10}"
         --env "DATABASE_CONN_MAX_LIFETIME_MINUTES=${DATABASE_CONN_MAX_LIFETIME_MINUTES:-30}"
         --env "DATABASE_CONN_MAX_IDLE_TIME_MINUTES=${DATABASE_CONN_MAX_IDLE_TIME_MINUTES:-5}"
-        --env "REDIS_HOST=${REDIS_HOST}"
+        --env "REDIS_HOST=127.0.0.1"
         --env "REDIS_PORT=${REDIS_PORT:-6379}"
         --env "REDIS_PASSWORD=${REDIS_PASSWORD:-}"
         --env "REDIS_DB=${REDIS_DB:-0}"
@@ -104,6 +118,14 @@ run_container() {
         -p "${APP_PORT}:8080"
         -v "${DATA_VOLUME}:/app/data"
     )
+
+    if [ -n "${POSTGRES_HOST_PORT}" ]; then
+        run_args+=(-p "${POSTGRES_HOST_PORT}:${DATABASE_PORT:-5432}")
+    fi
+
+    if [ -n "${REDIS_HOST_PORT}" ]; then
+        run_args+=(-p "${REDIS_HOST_PORT}:${REDIS_PORT:-6379}")
+    fi
 
     if [ -n "${NETWORK_NAME}" ]; then
         run_args+=(--network "${NETWORK_NAME}")

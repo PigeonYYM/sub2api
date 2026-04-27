@@ -1,0 +1,48 @@
+FROM hub.bilibili.co/nyx-base/ubuntu:22.04
+
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/|http://mirrors.ustc.edu.cn/ubuntu/|g; s|http://security.ubuntu.com/ubuntu/|http://mirrors.ustc.edu.cn/ubuntu/|g" /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gosu \
+        postgresql-client \
+        tzdata \
+        wget && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN getent passwd qa >/dev/null || useradd -m -s /bin/bash qa && \
+    getent passwd rd >/dev/null || useradd -m -s /bin/bash rd && \
+    getent passwd gt >/dev/null || useradd -m -s /bin/bash gt && \
+    getent passwd sub2api >/dev/null || useradd -m -s /bin/bash sub2api
+
+RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+
+ARG app_name
+
+ENV APP_ROOT=/data/app/${app_name}
+ENV APP_DATA_DIR=/data/app/${app_name}/data
+ENV APP_BINARY=/data/app/${app_name}/sub2api
+
+RUN mkdir -p /data/app/${app_name} \
+    /data/app/${app_name}/data \
+    /data/log/${app_name} \
+    /data/conf/${app_name}
+
+ADD release/${app_name}/bin/sub2api /data/app/${app_name}/sub2api
+ADD release/${app_name}/backend/resources /data/app/${app_name}/resources
+ADD release/${app_name}/deploy/docker-entrypoint.sh /data/app/${app_name}/docker-entrypoint.sh
+
+RUN chmod +x /data/app/${app_name}/sub2api /data/app/${app_name}/docker-entrypoint.sh && \
+    chown -R sub2api:sub2api /data/app/${app_name} /data/log/${app_name} /data/conf/${app_name}
+
+WORKDIR /data/app/${app_name}
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget -q -T 5 -O /dev/null http://localhost:${SERVER_PORT:-8080}/health || exit 1
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["./sub2api"]

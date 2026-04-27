@@ -1,0 +1,47 @@
+# =============================================================================
+# Sub2API runtime image for Ubuntu-based internal environments
+# =============================================================================
+# This image only packages prebuilt artifacts from build-out/ and installs the
+# runtime dependencies such as postgresql-client.
+# =============================================================================
+
+ARG UBUNTU_IMAGE=hub.bilibili.co/nyx-base/ubuntu:22.04
+ARG APT_MIRROR=mirrors.ustc.edu.cn
+
+FROM ${UBUNTU_IMAGE}
+
+ARG APT_MIRROR
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/|http://${APT_MIRROR}/ubuntu/|g; s|http://security.ubuntu.com/ubuntu/|http://${APT_MIRROR}/ubuntu/|g" /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gosu \
+        postgresql-client \
+        tzdata \
+        wget && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1000 sub2api && \
+    useradd --uid 1000 --gid sub2api --shell /bin/bash --create-home sub2api
+
+WORKDIR /app
+
+COPY build-out/sub2api /app/sub2api
+COPY build-out/resources /app/resources
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+
+RUN chmod +x /app/sub2api /app/docker-entrypoint.sh && \
+    mkdir -p /app/data && \
+    chown -R sub2api:sub2api /app
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget -q -T 5 -O /dev/null http://localhost:${SERVER_PORT:-8080}/health || exit 1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/sub2api"]

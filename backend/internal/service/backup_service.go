@@ -110,6 +110,7 @@ type BackupService struct {
 	encryptor    SecretEncryptor
 	storeFactory BackupObjectStoreFactory
 	dumper       DBDumper
+	bootstrapS3  *BackupS3Config
 
 	opMu      sync.Mutex // 保护 backingUp/restoring 标志
 	backingUp bool
@@ -139,7 +140,7 @@ func NewBackupService(
 	dumper DBDumper,
 ) *BackupService {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
-	return &BackupService{
+	svc := &BackupService{
 		settingRepo:  settingRepo,
 		dbCfg:        &cfg.Database,
 		encryptor:    encryptor,
@@ -148,12 +149,26 @@ func NewBackupService(
 		bgCtx:        bgCtx,
 		bgCancel:     bgCancel,
 	}
+	if cfg != nil && cfg.Backup.S3.HasAnyValue() {
+		svc.bootstrapS3 = &BackupS3Config{
+			Endpoint:        strings.TrimSpace(cfg.Backup.S3.Endpoint),
+			Region:          strings.TrimSpace(cfg.Backup.S3.Region),
+			Bucket:          strings.TrimSpace(cfg.Backup.S3.Bucket),
+			AccessKeyID:     strings.TrimSpace(cfg.Backup.S3.AccessKeyID),
+			SecretAccessKey: strings.TrimSpace(cfg.Backup.S3.SecretAccessKey),
+			Prefix:          strings.TrimSpace(cfg.Backup.S3.Prefix),
+			ForcePathStyle:  cfg.Backup.S3.ForcePathStyle,
+		}
+	}
+	return svc
 }
 
 // Start 启动定时备份调度器并清理孤立记录
 func (s *BackupService) Start() {
 	s.cronSched = cron.New()
 	s.cronSched.Start()
+
+	s.bootstrapS3Config()
 
 	// 清理重启后孤立的 running 记录
 	s.recoverStaleRecords()
@@ -235,6 +250,44 @@ func (s *BackupService) Stop() {
 }
 
 // ─── S3 配置管理 ───
+
+func (s *BackupService) bootstrapS3Config() {
+	if s == nil || s.bootstrapS3 == nil || !s.bootstrapS3.IsConfigured() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
+	if err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 读取现有 S3 配置失败，跳过环境变量初始化: %v", err)
+		return
+	}
+	if strings.TrimSpace(raw) != "" {
+		return
+	}
+
+	cfg := *s.bootstrapS3
+	encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
+	if err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 加密环境变量中的 S3 SecretAccessKey 失败: %v", err)
+		return
+	}
+	cfg.SecretAccessKey = encrypted
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 序列化环境变量中的 S3 配置失败: %v", err)
+		return
+	}
+	if err := s.settingRepo.Set(ctx, settingKeyBackupS3Config, string(data)); err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 保存环境变量中的 S3 配置失败: %v", err)
+		return
+	}
+
+	logger.LegacyPrintf("service.backup", "[Backup] bootstrapped S3 backup config from environment variables")
+}
 
 func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error) {
 	cfg, err := s.loadS3Config(ctx)

@@ -616,10 +616,15 @@ async function importBackupsFromS3() {
   importingBackups.value = true
   try {
     const result = await adminAPI.backup.importBackupRecords()
+    const importMessageParams = {
+      imported: result.imported,
+      scanned: result.scanned,
+      skipped: result.skipped,
+    }
     if (result.imported > 0) {
-      appStore.showSuccess(t('admin.backup.operations.importSuccess', result))
+      appStore.showSuccess(t('admin.backup.operations.importSuccess', importMessageParams))
     } else {
-      appStore.showInfo(t('admin.backup.operations.importNoop', result))
+      appStore.showInfo(t('admin.backup.operations.importNoop', importMessageParams))
     }
     await loadBackups()
   } catch (error) {

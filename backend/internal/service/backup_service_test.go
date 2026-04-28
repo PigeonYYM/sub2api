@@ -218,6 +218,13 @@ func newTestBackupService(repo *mockSettingRepo, dumper DBDumper, store *mockObj
 	return NewBackupService(repo, cfg, &plainEncryptor{}, factory, dumper)
 }
 
+func newTestBackupServiceWithConfig(repo *mockSettingRepo, cfg *config.Config, dumper DBDumper, store *mockObjectStore) *BackupService {
+	factory := func(_ context.Context, _ *BackupS3Config) (BackupObjectStore, error) {
+		return store, nil
+	}
+	return NewBackupService(repo, cfg, &plainEncryptor{}, factory, dumper)
+}
+
 func seedS3Config(t *testing.T, repo *mockSettingRepo) {
 	t.Helper()
 	cfg := BackupS3Config{
@@ -286,6 +293,76 @@ func TestBackupService_S3ConfigKeepExistingSecret(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "original-secret", internal.SecretAccessKey)
 	require.Equal(t, "AKID-NEW", internal.AccessKeyID)
+}
+
+func TestBackupService_StartBootstrapsS3ConfigFromEnv(t *testing.T) {
+	repo := newMockSettingRepo()
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{
+			Host:   "localhost",
+			Port:   5432,
+			User:   "test",
+			DBName: "testdb",
+		},
+		Backup: config.BackupConfig{
+			S3: config.BackupS3Config{
+				Endpoint:        "https://example.r2.cloudflarestorage.com",
+				Region:          "auto",
+				Bucket:          "sub2api-backups",
+				AccessKeyID:     "akid",
+				SecretAccessKey: "secret",
+				Prefix:          "backups/",
+			},
+		},
+	}
+	svc := newTestBackupServiceWithConfig(repo, cfg, &mockDumper{}, newMockObjectStore())
+	t.Cleanup(svc.Stop)
+
+	svc.Start()
+
+	internal, err := svc.loadS3Config(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, internal)
+	require.Equal(t, "https://example.r2.cloudflarestorage.com", internal.Endpoint)
+	require.Equal(t, "sub2api-backups", internal.Bucket)
+	require.Equal(t, "akid", internal.AccessKeyID)
+	require.Equal(t, "secret", internal.SecretAccessKey)
+
+	raw, err := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+	require.NoError(t, err)
+	require.Contains(t, raw, "\"secret_access_key\":\"ENC:secret\"")
+}
+
+func TestBackupService_StartDoesNotOverrideExistingS3Config(t *testing.T) {
+	repo := newMockSettingRepo()
+	seedS3Config(t, repo)
+
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{
+			Host:   "localhost",
+			Port:   5432,
+			User:   "test",
+			DBName: "testdb",
+		},
+		Backup: config.BackupConfig{
+			S3: config.BackupS3Config{
+				Bucket:          "env-bucket",
+				AccessKeyID:     "env-akid",
+				SecretAccessKey: "env-secret",
+			},
+		},
+	}
+	svc := newTestBackupServiceWithConfig(repo, cfg, &mockDumper{}, newMockObjectStore())
+	t.Cleanup(svc.Stop)
+
+	svc.Start()
+
+	internal, err := svc.loadS3Config(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, internal)
+	require.Equal(t, "test-bucket", internal.Bucket)
+	require.Equal(t, "AKID", internal.AccessKeyID)
+	require.Equal(t, "secret123", internal.SecretAccessKey)
 }
 
 func TestBackupService_SaveRecordConcurrency(t *testing.T) {

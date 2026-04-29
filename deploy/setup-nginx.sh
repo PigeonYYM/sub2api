@@ -6,25 +6,19 @@ NGINX_CONF="/etc/nginx/sites-available/sub2api"
 
 log() { echo "[setup-nginx] $*"; }
 
-# 1. 编译前端
-log "Building frontend..."
-if ! command -v node >/dev/null 2>&1; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+# 1. 检查前端构建产物
+if [ ! -d "${WORK_DIR}/frontend/dist" ]; then
+    echo "ERROR: frontend/dist not found!" >&2
+    echo "Build locally first:" >&2
+    echo "  cd frontend && pnpm install && pnpm run build" >&2
+    echo "Then upload frontend/dist to ${WORK_DIR}/frontend/dist" >&2
+    exit 1
 fi
-if ! command -v pnpm >/dev/null 2>&1; then
-    npm install -g pnpm
-fi
-
-cd "${WORK_DIR}/frontend"
-pnpm config set registry https://registry.npmmirror.com
-pnpm install
-pnpm run build
-log "Frontend built: ${WORK_DIR}/frontend/dist"
 
 # 2. 安装 Nginx
 log "Installing Nginx..."
-apt-get install -y nginx
+apt-get update -qq
+apt-get install -y -qq nginx
 rm -f /etc/nginx/sites-enabled/default
 
 # 3. 写入配置
@@ -69,5 +63,5 @@ nginx -t
 systemctl restart nginx
 systemctl enable nginx
 
-log "Nginx configured and started on port 80"
+log "Nginx started on port 80"
 log "Access: http://<ECS_IP>/"

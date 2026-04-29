@@ -200,9 +200,21 @@ prepare_directories() {
 }
 
 discover_pg_bin_dir() {
-    PG_BIN_DIR="$(find /usr/lib/postgresql -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+    local initdb_path
+
+    initdb_path="$(find /usr/lib/postgresql -type f -path '*/bin/initdb' | sort -V | tail -n 1)"
+    if [ -n "${initdb_path}" ]; then
+        PG_BIN_DIR="$(dirname "${initdb_path}")"
+        return
+    fi
+
+    if command -v initdb >/dev/null 2>&1; then
+        PG_BIN_DIR="$(dirname "$(command -v initdb)")"
+        return
+    fi
+
     if [ -z "${PG_BIN_DIR}" ]; then
-        echo "PostgreSQL binaries not found under /usr/lib/postgresql" >&2
+        echo "PostgreSQL binaries not found" >&2
         exit 1
     fi
 }

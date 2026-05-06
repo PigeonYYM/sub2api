@@ -35,7 +35,8 @@ cd sub2api/backend
 export GOSUMDB=sum.golang.google.cn
 
 # 编译 Linux 二进制
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o sub2api-linux ./cmd/server
+# GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o sub2api-linux ./cmd/server
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -o ./server/sub2api ./cmd/server
 ```
 
 ### 1.2 编译前端

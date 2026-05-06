@@ -642,3 +642,77 @@ func AutoSetupFromEnv() error {
 	logger.LegacyPrintf("setup", "%s", "Auto setup completed successfully!")
 	return nil
 }
+
+// SyncAdminPassword syncs the admin password from the ADMIN_PASSWORD environment variable
+// if it differs from the one stored in the database. This allows ECS deployments to update
+// the admin password by simply modifying the .env file and restarting.
+func SyncAdminPassword() error {
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword == "" {
+		return nil
+	}
+
+	adminEmail := getEnvOrDefault("ADMIN_EMAIL", "admin@sub2api.local")
+
+	// Load config to get database connection info
+	cfg, err := config.LoadForBootstrap()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	dsn := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
+		cfg.Database.Password, cfg.Database.DBName, cfg.Database.SSLMode,
+	)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.LegacyPrintf("setup", "failed to close db connection: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var passwordHash string
+	err = db.QueryRowContext(ctx,
+		"SELECT password_hash FROM users WHERE email = $1 AND role = $2",
+		adminEmail, service.RoleAdmin,
+	).Scan(&passwordHash)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Admin does not exist, nothing to sync
+			return nil
+		}
+		return fmt.Errorf("failed to query admin user: %w", err)
+	}
+
+	// Check if password already matches
+	tempUser := &service.User{PasswordHash: passwordHash}
+	if tempUser.CheckPassword(adminPassword) {
+		return nil // Already in sync
+	}
+
+	// Update password
+	admin := &service.User{}
+	if err := admin.SetPassword(adminPassword); err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	_, err = db.ExecContext(ctx,
+		"UPDATE users SET password_hash = $1, updated_at = $2, token_version = token_version + 1 WHERE email = $3 AND role = $4",
+		admin.PasswordHash, time.Now(), adminEmail, service.RoleAdmin,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update admin password: %w", err)
+	}
+
+	logger.LegacyPrintf("setup", "Admin password synced from environment variable")
+	return nil
+}

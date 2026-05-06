@@ -129,6 +129,11 @@ func runSetupServer() {
 }
 
 func runMainServer() {
+	// Sync admin password from env var before loading full config
+	if err := setup.SyncAdminPassword(); err != nil {
+		log.Printf("Warning: failed to sync admin password: %v", err)
+	}
+
 	cfg, err := config.LoadForBootstrap()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)

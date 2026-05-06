@@ -3,6 +3,7 @@ set -euo pipefail
 
 WORK_DIR="/root/workspace/sub2api"
 DATA_DIR="/var/lib/sub2api"
+export DATA_DIR
 PG_DATA="${DATA_DIR}/postgres"
 REDIS_DATA="${DATA_DIR}/redis"
 RUNTIME_DIR="${DATA_DIR}/runtime"
@@ -138,7 +139,7 @@ generate_env() {
     local redis_pass=$(random_hex 16)
     local jwt=$(random_hex 32)
     local totp=$(random_hex 32)
-    local admin_pass=$(random_hex 8)
+    local admin_pass="zizfo1-fitwom-vicReb"
 
     cat > "${ENV_FILE}" <<EOF
 AUTO_SETUP=true

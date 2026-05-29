@@ -75,6 +75,7 @@ const CLICurrentVersion = "2.1.92"
 //   - OAuth 账号 + 非 haiku：追加这整份列表，再按需保留 client 带来的 beta。
 //   - OAuth 账号 + haiku：Anthropic 对 haiku 不做 third-party 判定，使用 HaikuBetaHeader 即可。
 //   - API-key 账号：不要使用本函数，参见 APIKeyBetaHeader。
+//   - 不默认加入 redact-thinking，避免上游抹除 thinking 内容；客户端显式传入时由合并逻辑保留。
 func FullClaudeCodeMimicryBetas() []string {
 	return []string{
 		BetaClaudeCode,
@@ -82,7 +83,6 @@ func FullClaudeCodeMimicryBetas() []string {
 		BetaInterleavedThinking,
 		BetaPromptCachingScope,
 		BetaEffort,
-		BetaRedactThinking,
 		BetaContextManagement,
 		BetaExtendedCacheTTL,
 	}
@@ -133,6 +133,12 @@ var DefaultModels = []Model{
 		Type:        "model",
 		DisplayName: "Claude Opus 4.7",
 		CreatedAt:   "2026-04-17T00:00:00Z",
+	},
+	{
+		ID:          "claude-opus-4-8",
+		Type:        "model",
+		DisplayName: "Claude Opus 4.8",
+		CreatedAt:   "2026-05-29T00:00:00Z",
 	},
 	{
 		ID:          "claude-sonnet-4-6",

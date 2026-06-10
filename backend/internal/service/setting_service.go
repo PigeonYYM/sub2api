@@ -137,6 +137,11 @@ type cachedOpenAICodexUserAgent struct {
 	expiresAt int64 // unix nano
 }
 
+type cachedOpenAIQuotaAutoPauseSettings struct {
+	settings  OpsOpenAIAccountQuotaAutoPauseSettings
+	expiresAt int64
+}
+
 const openAICodexUserAgentCacheTTL = 60 * time.Second
 const openAICodexUserAgentErrorTTL = 5 * time.Second
 const openAICodexUserAgentDBTimeout = 5 * time.Second
@@ -151,6 +156,12 @@ type cachedOpenAIAllowCodexPlugin struct {
 const openAIAllowCodexPluginCacheTTL = 60 * time.Second
 const openAIAllowCodexPluginErrorTTL = 5 * time.Second
 const openAIAllowCodexPluginDBTimeout = 5 * time.Second
+
+const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
+const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
+const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
+
+const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
 
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
@@ -176,6 +187,15 @@ type SettingService struct {
 	openAICodexUASF             singleflight.Group
 	openAIAllowCodexPluginCache atomic.Value // *cachedOpenAIAllowCodexPlugin
 	openAIAllowCodexPluginSF    singleflight.Group
+
+	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
+	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
+	// path without ever blocking on the DB; when the cached entry expires, a background
+	// goroutine refreshes it via openAIQuotaAutoPauseSettingsSF (stale-while-revalidate).
+	// This per-service field also gives tests natural isolation — each SettingService
+	// instance owns its own cache, no shared package-level state.
+	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
+	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 }
 
 // DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）
@@ -741,6 +761,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyAvailableChannelsEnabled,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
+		SettingKeyAllowUserViewErrorRequests,
 	}
 
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
@@ -853,6 +874,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
+
+		AllowUserViewErrorRequests: settings[SettingKeyAllowUserViewErrorRequests] == "true",
 	}, nil
 }
 
@@ -928,6 +951,17 @@ func (s *SettingService) GetAvailableChannelsRuntime(ctx context.Context) Availa
 	return AvailableChannelsRuntime{
 		Enabled: vals[SettingKeyAvailableChannelsEnabled] == "true",
 	}
+}
+
+// IsUserErrorViewAllowed reads the user-facing error-requests visibility switch
+// directly from the settings store. Fail-closed: on error returns false (opt-in default).
+func (s *SettingService) IsUserErrorViewAllowed(ctx context.Context) bool {
+	vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyAllowUserViewErrorRequests})
+	if err != nil {
+		slog.Warn("failed to get allow_user_view_error_requests setting, defaulting to false", "error", err)
+		return false
+	}
+	return vals[SettingKeyAllowUserViewErrorRequests] == "true"
 }
 
 // GetAntigravityUserAgentVersion 返回 Antigravity 上游请求使用的版本号。
@@ -1155,6 +1189,7 @@ type PublicSettingsInjectionPayload struct {
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
+	AllowUserViewErrorRequests           bool `json:"allow_user_view_error_requests"`
 }
 
 // GetPublicSettingsForInjection returns public settings in a format suitable for HTML injection.
@@ -1217,6 +1252,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
+		AllowUserViewErrorRequests:           settings.AllowUserViewErrorRequests,
 	}, nil
 }
 
@@ -1904,6 +1940,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		updates[SettingKeyDefaultPlatformQuotas] = string(blob)
 	}
 
+	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
+
 	return updates, nil
 }
 
@@ -2027,6 +2065,17 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		enabled:   settings.OpenAIAdvancedSchedulerEnabled,
 		expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
 	})
+	// Invalidate the quota auto-pause cache and let the next read trigger a fresh load.
+	// We can't know from here whether ops_advanced_settings was also touched, so be
+	// defensive: store an expired entry — GetOpenAIQuotaAutoPauseSettings will serve
+	// stale and kick off an async refresh, never blocking the request that follows.
+	s.openAIQuotaAutoPauseSettingsSF.Forget(openAIQuotaAutoPauseSettingsRefreshKey)
+	if cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings); cached != nil {
+		s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+			settings:  cached.settings,
+			expiresAt: 0,
+		})
+	}
 	if s.cfg != nil {
 		s.cfg.SetTrustForwardedIPForAPIKeyACL(settings.APIKeyACLTrustForwardedIP)
 	}
@@ -2785,6 +2834,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingPaymentVisibleMethodAlipayEnabled:     "false",
 		SettingPaymentVisibleMethodWxpayEnabled:      "false",
 		openAIAdvancedSchedulerSettingKey:            "false",
+
+		SettingKeyAllowUserViewErrorRequests: "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -3341,6 +3392,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 			result.DefaultPlatformQuotas = parsed
 		}
 	}
+
+	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true" // default false
 
 	return result
 }
@@ -4446,6 +4499,106 @@ func (s *SettingService) GetClaudeCodeVersionBounds(ctx context.Context) (min, m
 		return "", ""
 	}
 	return b.min, b.max
+}
+
+// GetOpenAIQuotaAutoPauseSettings returns the current global default quota auto-pause
+// settings. It is invoked on the OpenAI scheduling hot path (once per request) and is
+// therefore designed to never block on the DB:
+//
+//   - Fresh cached value → returned immediately.
+//   - Stale or empty cache → the last known value is returned, and a background
+//     goroutine refreshes the cache via singleflight (stale-while-revalidate).
+//   - First call with no cache yet → zero defaults are returned and the same async
+//     refresh is kicked off; the next call gets the freshly populated value.
+//
+// Callers that need the freshly persisted value synchronously (tests, post-update
+// confirmation, optional startup warm-up) should call WarmOpenAIQuotaAutoPauseSettings.
+func (s *SettingService) GetOpenAIQuotaAutoPauseSettings(ctx context.Context) OpsOpenAIAccountQuotaAutoPauseSettings {
+	if s == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings)
+	now := time.Now().UnixNano()
+	if cached != nil && now < cached.expiresAt {
+		return cached.settings
+	}
+	// Stale or unset: trigger background refresh without blocking this request.
+	// singleflight.DoChan dedupes concurrent refreshes; we deliberately ignore the
+	// returned channel — the result is observable via the atomic cache.
+	s.openAIQuotaAutoPauseSettingsSF.DoChan(openAIQuotaAutoPauseSettingsRefreshKey, func() (any, error) {
+		s.refreshOpenAIQuotaAutoPauseSettings(context.Background())
+		return nil, nil
+	})
+	if cached != nil {
+		return cached.settings // serve stale value while revalidating
+	}
+	return OpsOpenAIAccountQuotaAutoPauseSettings{}
+}
+
+// WarmOpenAIQuotaAutoPauseSettings synchronously loads the quota auto-pause settings
+// into the in-memory cache. Useful for application startup (so the first request hits
+// a warm cache) and for tests that need deterministic reads immediately after
+// constructing the service.
+func (s *SettingService) WarmOpenAIQuotaAutoPauseSettings(ctx context.Context) OpsOpenAIAccountQuotaAutoPauseSettings {
+	if s == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	s.refreshOpenAIQuotaAutoPauseSettings(ctx)
+	cached, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings)
+	if cached == nil {
+		return OpsOpenAIAccountQuotaAutoPauseSettings{}
+	}
+	return cached.settings
+}
+
+// refreshOpenAIQuotaAutoPauseSettings reads the latest settings from the DB and stores
+// them into the in-memory cache. On error it stores the prior value (or zero defaults
+// if nothing is cached yet) with the shorter error TTL so the next refresh comes
+// sooner. Always uses its own timeout-bounded context to keep refresh latency
+// predictable regardless of the caller.
+func (s *SettingService) refreshOpenAIQuotaAutoPauseSettings(ctx context.Context) {
+	if s == nil || s.settingRepo == nil {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIQuotaAutoPauseSettingsDBTimeout)
+	defer cancel()
+
+	settings := OpsOpenAIAccountQuotaAutoPauseSettings{}
+	ttl := openAIQuotaAutoPauseSettingsCacheTTL
+	raw, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpsAdvancedSettings)
+	if err == nil {
+		cfg := defaultOpsAdvancedSettings()
+		if strings.TrimSpace(raw) != "" {
+			if jsonErr := json.Unmarshal([]byte(raw), cfg); jsonErr == nil {
+				normalizeOpsAdvancedSettings(cfg)
+			}
+		}
+		settings = cfg.OpenAIAccountQuotaAutoPause
+	} else if !errors.Is(err, ErrSettingNotFound) {
+		// Real error: keep serving prior value but refresh sooner.
+		if prior, _ := s.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings); prior != nil {
+			settings = prior.settings
+		}
+		ttl = openAIQuotaAutoPauseSettingsErrorTTL
+	}
+
+	s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+		settings:  settings,
+		expiresAt: time.Now().Add(ttl).UnixNano(),
+	})
+}
+
+// SetOpenAIQuotaAutoPauseSettings writes the given settings directly into the in-memory
+// cache. Called from settings-write code paths so that the next read reflects the new
+// value immediately, without waiting for the background refresh.
+func (s *SettingService) SetOpenAIQuotaAutoPauseSettings(settings OpsOpenAIAccountQuotaAutoPauseSettings) {
+	if s == nil {
+		return
+	}
+	s.openAIQuotaAutoPauseSettingsCache.Store(&cachedOpenAIQuotaAutoPauseSettings{
+		settings:  settings,
+		expiresAt: time.Now().Add(openAIQuotaAutoPauseSettingsCacheTTL).UnixNano(),
+	})
 }
 
 // GetRectifierSettings 获取请求整流器配置

@@ -110,6 +110,19 @@ export default {
         testFailed: 'S3 connection test failed',
         saved: 'S3 configuration saved'
       },
+      imageStorage: {
+        title: 'Async image object storage',
+        description: 'Enables the asynchronous image endpoints and offloads generated images to object storage, keeping only short links in Redis. Shares the S3 client with backups and takes effect on save — no restart needed.',
+        enabled: 'Enable async image tasks',
+        reuseBackupS3: 'Reuse the backup S3 configuration above (different bucket/prefix only)',
+        bucket: 'Bucket',
+        bucketInherited: 'Leave empty to use the backup bucket',
+        prefix: 'Key prefix',
+        publicBaseUrl: 'Public base URL',
+        publicBaseUrlPlaceholder: 'Leave empty to return presigned links',
+        presignExpiryHours: 'Presigned link TTL (hours)',
+        saved: 'Async image object storage saved'
+      },
       schedule: {
         title: 'Scheduled Backup',
         description: 'Configure automatic scheduled backups',
@@ -430,6 +443,25 @@ export default {
       title: 'User Management',
       description: 'Manage users and their permissions',
       createUser: 'Create User',
+      bulkLimits: {
+        action: 'Set limits ({count})',
+        title: 'Set user limits',
+        selectedCount: '{count} users selected',
+        selectionLimit: 'Select no more than {max} users at a time.',
+        selectUser: 'Select {email}',
+        enableConcurrency: 'Update concurrency',
+        enableRPMLimit: 'Update RPM limit',
+        unlimited: 'Unlimited',
+        nonNegativeInteger: 'Enter a non-negative whole number.',
+        apply: 'Apply limits',
+        applying: 'Applying...',
+        concurrencyValue: 'Concurrency: {value}',
+        rpmValue: 'RPM: {value}',
+        rpmUnlimitedValue: 'RPM: Unlimited',
+        confirm: 'Overwrite limits for {count} users?\n{fields}',
+        success: 'Updated limits for {count} users',
+        failed: 'Failed to update user limits'
+      },
       editUser: 'Edit User',
       deleteUser: 'Delete User',
       deleteConfirmMessage: "Are you sure you want to delete user '{email}'? This action cannot be undone.",
@@ -755,6 +787,10 @@ export default {
       createGroup: 'Create Group',
       editGroup: 'Edit Group',
       deleteGroup: 'Delete Group',
+      duplicate: 'Duplicate',
+      duplicating: 'Duplicating',
+      duplicateSuccess: 'Group duplicated as "{name}" and disabled. Review its configuration before enabling it.',
+      duplicateFailed: 'Failed to duplicate group',
       sortOrder: 'Sort',
       columnSettings: 'Column Settings',
       sortOrderHint: 'Drag groups to adjust display order, groups at the top will be displayed first',
@@ -769,6 +805,7 @@ export default {
       public: 'Public',
       columns: {
         name: 'Name',
+        id: 'ID',
         platform: 'Platform',
         rateMultiplier: 'Rate Multiplier',
         rpmOverride: 'RPM Override',
@@ -950,6 +987,13 @@ export default {
           'Videos are billed per second: per-second price × duration (1-15s, default 8s). By default the current effective group multiplier applies; independent mode uses the video multiplier instead.',
         finalPricePreview: 'Final per-second price preview',
         notConfigured: 'Not configured'
+      },
+      webSearchPricing: {
+        title: 'Codex Web Search Pricing',
+        pricePerCall: 'Price per search call (USD)',
+        pricePerCallHint:
+          'Leave empty to use the default $0.01 per call (official pricing: $10 per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
+        finalPricePreview: 'Per-call price after current multiplier: {price}'
       },
       peakRate: {
         enable: 'Enable peak rate multiplier',

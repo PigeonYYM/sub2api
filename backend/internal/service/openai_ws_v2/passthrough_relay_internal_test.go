@@ -125,6 +125,8 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
+			nil,
 			drop,
 			nil,
 			nil,
@@ -152,6 +154,8 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -186,6 +190,8 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -333,6 +339,13 @@ func TestParseUsageAndAccumulateAcceptsChatUsageAliases(t *testing.T) {
 	require.Equal(t, 4, got.CacheReadInputTokens)
 	require.Equal(t, 2, got.ImageOutputTokens)
 	require.Equal(t, got, state.usage)
+}
+
+func TestOpenAICacheCreationTokensFromUsageNestedZeroWins(t *testing.T) {
+	t.Parallel()
+
+	usage := gjson.Parse(`{"input_tokens_details":{"cache_write_tokens":0},"cache_creation_input_tokens":19}`)
+	require.Zero(t, openAICacheCreationTokensFromUsage(usage))
 }
 
 func TestEmitTurnCompleteCoverage(t *testing.T) {

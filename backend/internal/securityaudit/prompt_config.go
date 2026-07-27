@@ -41,8 +41,10 @@ type ConfigStore interface {
 	EffectiveMode() Mode
 	// BlockingActivationDegraded is true when storage intent requires blocking
 	// but no usable blocking snapshot is active (cold start or failed reload).
+	// It must stay false when blocking is not intended, even if config is
+	// untrusted—otherwise default-off deployments fail closed for all traffic.
 	BlockingActivationDegraded() bool
-	Public() PublicConfig
+	Public() (PublicConfig, error)
 	Save(ctx context.Context, req UpdateConfigRequest, actorID int64) (PublicConfig, error)
 	RuntimeState() (expected int64, active int64, loadedAt *time.Time, loadError string)
 	Encrypt(value string) (string, error)

@@ -37,9 +37,11 @@ type ConfigManager struct {
 	// activated. A config version alone cannot distinguish async from blocking.
 	expectedBlocking atomic.Bool
 	// configUntrusted is set when a load/reload fails before a trustworthy
-	// snapshot is installed. While set, EffectiveMode fails closed so a
-	// persisted blocking policy cannot be silently skipped after startup or
-	// invalidation errors.
+	// snapshot is installed. Combined with expectedBlocking, EffectiveMode
+	// fails closed so a persisted blocking policy cannot be silently skipped
+	// after startup or invalidation errors. Without blocking intent, untrusted
+	// alone must not force ModeBlocking—Prompt Audit is default-off and must
+	// not take the gateway down for every API request (see issue #4560).
 	configUntrusted atomic.Bool
 
 	stateMu       sync.RWMutex
@@ -147,11 +149,14 @@ func (m *ConfigManager) BlockingActivationDegraded() bool {
 	if m == nil {
 		return false
 	}
-	if m.configUntrusted.Load() {
-		return true
-	}
+	// Fail closed only when storage intent requires blocking. Untrusted config
+	// without blocking intent must remain ModeOff so administrators can still
+	// operate the gateway and turn Prompt Audit off after a failed reload.
 	if !m.expectedBlocking.Load() {
 		return false
+	}
+	if m.configUntrusted.Load() {
+		return true
 	}
 	active, ok := m.Active()
 	if !ok {
@@ -189,15 +194,15 @@ func (m *ConfigManager) markUntrustedIfNoActiveSnapshot() {
 	}
 }
 
-func (m *ConfigManager) Public() PublicConfig {
+func (m *ConfigManager) Public() (PublicConfig, error) {
 	if m == nil {
-		return PublicFromStorage(DefaultStorageConfig(), false)
+		return PublicConfig{}, infraerrors.ServiceUnavailable(ErrorCodeConfigUnavailable, "提示词审计配置暂不可用")
 	}
 	snapshot := m.snapshot.Load()
 	if snapshot == nil {
-		return PublicFromStorage(DefaultStorageConfig(), false)
+		return PublicConfig{}, infraerrors.ServiceUnavailable(ErrorCodeConfigUnavailable, "提示词审计配置暂不可用")
 	}
-	return PublicFromStorage(cloneStorageConfig(snapshot.storage), snapshot.active.RiskControlEnabled)
+	return PublicFromStorage(cloneStorageConfig(snapshot.storage), snapshot.active.RiskControlEnabled), nil
 }
 
 func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actorID int64) (PublicConfig, error) {
@@ -264,6 +269,9 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	m.expected.Store(next.ConfigVersion)
 	m.expectedBlocking.Store(active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
 	m.snapshot.Store(&activeConfigSnapshot{storage: cloneStorageConfig(next), active: cloneActiveConfig(active), loadedAt: m.clock.Now()})
+	// A successful admin save installs a trustworthy snapshot; clear any prior
+	// fail-closed degradation so disabling audit actually takes effect.
+	m.configUntrusted.Store(false)
 	m.clearLoadError()
 	LogInfo(EventConfigUpdated, map[string]any{
 		"config_version": next.ConfigVersion, "status": "updated",

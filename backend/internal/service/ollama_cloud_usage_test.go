@@ -36,6 +36,14 @@ type ollamaUsageTestRepo struct {
 	disableAutoAttempts atomic.Int64
 	disableAutoCalls    atomic.Int64
 	groupResolveCalls   atomic.Int64
+	getByIDCalls        atomic.Int64
+}
+
+// GetByID counts loads so a test can wait for a caller to reach the point just
+// before the singleflight group, instead of guessing with a sleep.
+func (r *ollamaUsageTestRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	r.getByIDCalls.Add(1)
+	return r.upstreamBillingProbeAccountRepo.GetByID(ctx, id)
 }
 
 func (r *ollamaUsageTestRepo) ListOllamaCloudUsageGroupAccounts(_ context.Context, anchors []*Account) ([]Account, error) {
@@ -459,7 +467,14 @@ func TestIsOllamaCloudUsageAccountStrictOfficialHost(t *testing.T) {
 		{"https://ollama.com", PlatformOpenAI, true},
 		{"HTTPS://OLLAMA.COM", PlatformAnthropic, true},
 		{"https://www.OLLAMA.com:443/v1", PlatformOpenAI, true},
-		{"https://ollama.com:443", PlatformOpenAI, true},
+		// 官方 ollama.com key 挂在国产 OpenAI 兼容平台下同样进用量窗口。
+		{"https://ollama.com", PlatformKimi, true},
+		{"https://www.ollama.com/v1", PlatformZhipu, true},
+		{"https://ollama.com:443", PlatformDeepseek, true},
+		// 用量窗口不随 base_url 放开到其余平台。
+		{"https://ollama.com", PlatformGemini, false},
+		{"https://ollama.com", PlatformGrok, false},
+		{"https://ollama.com", PlatformAntigravity, false},
 		{"https://ollama.com/", PlatformAnthropic, false},
 		{"https://ollama.com/v1/", PlatformOpenAI, false},
 		{"http://ollama.com", PlatformOpenAI, false},
@@ -477,6 +492,16 @@ func TestIsOllamaCloudUsageAccountStrictOfficialHost(t *testing.T) {
 			account.Credentials["base_url"] = test.baseURL
 			require.Equal(t, test.want, IsOllamaCloudUsageAccount(account))
 		})
+	}
+}
+
+// oauth 类型账号即使平台与 base_url 都命中也不进用量窗口（仅 apikey 账号）。
+func TestIsOllamaCloudUsageAccountRejectsOAuthType(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
+		account := ollamaUsageAccount(1)
+		account.Platform = platform
+		account.Type = AccountTypeOAuth
+		require.False(t, IsOllamaCloudUsageAccount(account), platform)
 	}
 }
 
@@ -805,7 +830,19 @@ func TestOllamaCloudUsageRefreshSingleflightAndRunnerDeduplicateSharedGroup(t *t
 	errs := make(chan error, 2)
 	go func() { _, err := svc.Refresh(context.Background(), first.ID); errs <- err }()
 	<-started
+	// The first caller is now parked in the stub, having loaded the account twice
+	// (once to build the group key, once inside the singleflight function).
+	loadsBeforeSecond := repo.getByIDCalls.Load()
 	go func() { _, err := svc.Refresh(context.Background(), second.ID); errs <- err }()
+	// Only release the first caller once the second one has loaded its own
+	// account, which happens immediately before it joins the singleflight group.
+	// Releasing right after starting the goroutine raced: if the first refresh
+	// finished first, the second became a fresh singleflight execution, re-read
+	// the account, saw the LastAttemptAt just written, and failed with the 30s
+	// manual-refresh 429 instead of sharing the in-flight result.
+	require.Eventually(t, func() bool {
+		return repo.getByIDCalls.Load() > loadsBeforeSecond
+	}, 5*time.Second, time.Millisecond, "the second caller must reach the singleflight group before the first is released")
 	close(release)
 	require.NoError(t, <-errs)
 	require.NoError(t, <-errs)

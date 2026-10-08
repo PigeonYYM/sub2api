@@ -612,6 +612,7 @@ const downloadPartsModalOpen = ref(false)
 const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const restoringPollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const MAX_POLL_COUNT = 900
+let disposed = false
 
 function updateRecordInList(updated: BackupRecord) {
   const idx = backups.value.findIndex(r => r.id === updated.id)
@@ -621,6 +622,7 @@ function updateRecordInList(updated: BackupRecord) {
 }
 
 function startPolling(backupId: string) {
+  if (disposed) return
   stopPolling()
   let count = 0
   pollingTimer.value = setInterval(async () => {
@@ -657,6 +659,7 @@ function stopPolling() {
 }
 
 function startRestorePolling(backupId: string) {
+  if (disposed) return
   stopRestorePolling()
   let count = 0
   restoringPollingTimer.value = setInterval(async () => {
@@ -1038,6 +1041,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   stopPolling()
   stopRestorePolling()
   document.removeEventListener('visibilitychange', handleVisibilityChange)
